@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>Drag Trainer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+  <header>
+    <h1>Drag Trainer</h1>
+    <div class="header-actions">
+      <button id="kofi" class="ghost kofi" title="Opens ko-fi.com/urmamge in your browser">Support me on Ko-fi</button>
+      <button id="reset" class="ghost">Reset (R)</button>
+    </div>
+  </header>
+  <section class="controls">
+    <div class="group"><span class="label">Mode</span>
+      <div id="modes" class="row">
+        <button class="chip" data-mode="timed">Timed</button>
+        <button class="chip" data-mode="drag">Drag practice</button>
+      </div>
+    </div>
+    <div class="group"><span class="label">Button</span>
+      <div id="buttons" class="row">
+        <button class="chip" data-btn="left">Left</button>
+        <button class="chip" data-btn="right">Right</button>
+      </div>
+    </div>
+    <div id="length-group" class="group"><span class="label">Length</span><div id="durations" class="row"></div></div>
+  </section>
+  <section id="timed-stats" class="stats">
+    <div class="stat"><span id="cps">0.00</span><label>CPS</label></div>
+    <div class="stat"><span id="clicks">0</span><label>Clicks</label></div>
+    <div class="stat"><span id="time">0.00</span><label>Time left</label></div>
+    <div class="stat"><span id="best">0.00</span><label>Best</label></div>
+  </section>
+  <section id="drag-stats" class="stats" hidden>
+    <div class="stat"><span id="drag-last">0</span><label>Last drag</label></div>
+    <div class="stat"><span id="drag-avg">0.0</span><label>Avg per drag</label></div>
+    <div class="stat"><span id="drag-count">0</span><label>Drags</label></div>
+    <div class="stat"><span id="drag-best">0</span><label>Best drag (all time)</label></div>
+  </section>
+  <div id="pad" class="pad"><div id="pad-label"></div></div>
+  <section class="drags">
+    <div id="drag-summary" class="summary"></div>
+    <div id="drag-bars" class="drag-bars"></div>
+  </section>
+  </main>
+  <aside class="side">
+  <button id="guide-btn" class="ghost guide-btn">How to drag click</button>
+  <div id="side-main" class="side-main">
+  <section class="card practice">
+    <div class="history-head">
+      <h2>Practice</h2>
+      <button id="session-btn" class="ghost small">Start session</button>
+    </div>
+    <div id="practice-status" class="practice-status"></div>
+    <div id="session-info" class="session" hidden>
+      <div class="session-row"><span id="session-phase" class="session-phase"></span><span id="session-time"></span></div>
+      <div class="session-bar"><div id="session-progress"></div></div>
+    </div>
+    <div id="practice-today" class="summary"></div>
+  </section>
+  <section class="card coach">
+    <h2>Coach</h2>
+    <div id="coach-live" class="coach-live"></div>
+    <ul id="coach-tips" class="coach-tips"></ul>
+  </section>
+  <div id="history-section" class="card history">
+    <div class="history-head">
+      <h2>History</h2>
+      <button id="clear" class="ghost small">Clear</button>
+    </div>
+    <div id="history-filter" class="row">
+      <button class="chip small" data-scope="length">This length</button>
+      <button class="chip small" data-scope="all">All lengths</button>
+    </div>
+    <div id="history-summary" class="summary"></div>
+    <ol id="history-list" class="history-list"></ol>
+  </div>
+  </div>
+  <section id="guide" class="card guide" hidden>
+    <h2>How to drag click</h2>
+    <p class="guide-intro">Drag clicking means sliding your finger along the mouse button so the friction makes it vibrate.
+      Each tiny bounce of the switch registers as a click, so one drag can give 5, 10 or 20+ clicks.</p>
+    <ol class="guide-steps">
+      <li><b>The mouse</b>
+        <p>Not every mouse can drag click, so check yours first.</p>
+        <ul>
+          <li><b>Mechanical switches.</b> Drag clicking relies on the metal contacts in the switch bouncing.
+            Optical switches use a light beam instead and don't bounce, so they top out at 1–2 clicks per drag.</li>
+          <li><b>Low debounce time.</b> Debounce is a filter that ignores clicks that come too close together,
+            and it eats the bounces you're trying to make. Look for a mouse whose software lets you set it, ideally to 0–4 ms.</li>
+          <li><b>A light, crisp click.</b> Buttons that need little force to press, with a short travel, vibrate more easily.</li>
+          <li><b>A smooth or matte button surface.</b> Your finger (or grip tape) needs something to rub against. Heavily
+            textured or rubberised buttons can damp the vibration.</li>
+        </ul>
+      </li>
+      <li><b>Set it up</b>
+        <p>Open your mouse's software and set debounce (sometimes called "click delay") as low as it goes. Make sure you
+          changed the active profile, then unplug the mouse, plug it back in and check the setting stuck.</p>
+      </li>
+      <li><b>Finger position</b>
+        <p>Tilt your finger to about 45° and use the very tip, or the side of the tip, not the flat pad. Brace the mouse
+          with your thumb and pinky so it doesn't slide around under the drag.</p>
+      </li>
+      <li><b>Pressure</b>
+        <p>This is the hardest part. Press only just hard enough for the switch to sit right at its click point while it vibrates.
+          Too light and your finger buzzes on the button without clicking; too hard and the button just stays held down.</p>
+        <ul>
+          <li>Buzz but few clicks: press slightly harder.</li>
+          <li>Smooth slide with no buzz: press lighter.</li>
+        </ul>
+      </li>
+      <li><b>The drag</b>
+        <p>Drag from the top of the button down towards the front edge in one smooth, medium-speed motion. Too slow gives no
+          friction; too fast ends before it builds up. Use the whole length of the button, and if it isn't working, try
+          a different spot, nearer the front edge or the side, or a diagonal direction.</p>
+      </li>
+      <li><b>Feel for the buzz</b>
+        <p>A working drag feels and sounds like a rattle or grind, like rubbing a finger on a balloon or a clean plate.
+          A steady, even buzz means a good drag. Once you can feel it, the click count usually jumps quickly.</p>
+      </li>
+      <li><b>Be consistent</b>
+        <p>Start every drag from the same spot, at the same angle, with the same pressure. When you get a great drag, notice
+          what was different and repeat it on purpose. Slow down while learning; speed comes back once it's consistent.
+          The Coach and the per-drag bars in Drag practice mode show how consistent you are.</p>
+      </li>
+      <li><b>Fast resets</b>
+        <p>Once your drags are consistent, work on the gap between them: lift and start the next drag in one smooth loop.
+          Aim for 3+ drags a second. Your CPS is roughly clicks per drag × drags per second.</p>
+      </li>
+      <li><b>Practise smart</b>
+        <p>Short sessions with rests beat long grinds, and a lot of the improvement happens overnight. Use "Start session"
+          in the Practice panel and stop when your drags fade. Track progress with 10-second timed tests, since 1-second
+          tests swing a lot.</p>
+        <ul>
+          <li>6–10 CPS: normal clicking</li>
+          <li>15–25 CPS: decent drag clicking</li>
+          <li>25–40+ CPS: very good drag clicking</li>
+        </ul>
+      </li>
+      <li><b>Grip tape</b>
+        <p>Grip tape on the main button gives your finger something to grab, so it vibrates the button instead of slipping
+          over it. Thin tape works better than thick, soft tape, which absorbs the vibration. Keep the tape and your fingertip
+          clean; a very slightly damp fingertip grips better than a bone-dry one.</p>
+      </li>
+    </ol>
+    <p class="guide-note">Some game servers limit or flag very high CPS, so check the rules where you play.</p>
+  </section>
+  </aside>
+  <script src="../dist/renderer.js"></script>
+</body>
+</html>
