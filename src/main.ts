@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, Notification, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, Menu, Notification, ipcMain, session, shell } from 'electron';
 import path from 'path';
 
 // One instance only, so a second launch can't leave a stray process around.
@@ -55,7 +55,15 @@ ipcMain.on('notify', (_e, title: unknown, body: unknown) => {
 
 app.on('second-instance', focusWindow);
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  // Camera only (for hand tracking, which runs locally); never the microphone or anything else.
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+    const types = 'mediaTypes' in details ? details.mediaTypes ?? [] : [];
+    callback(permission === 'media' && types.length > 0 && types.every((t) => t === 'video'));
+  });
+  session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission === 'media');
+  createWindow();
+});
 
 // The X button ends the whole app: no tray, no background process.
 app.on('window-all-closed', () => app.quit());

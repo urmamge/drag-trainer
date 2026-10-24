@@ -16,9 +16,9 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -34,7 +34,7 @@ jobs:
           "$hash  Drag-Trainer.exe" | Out-File -Encoding ascii release/SHA256SUMS.txt
           Get-Content release/SHA256SUMS.txt
 
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: release/Drag-Trainer.exe
 

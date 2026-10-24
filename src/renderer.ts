@@ -138,6 +138,8 @@ function coachDrag(): void {
   } else {
     setLive('info', `${n} clicks${recent.length >= 3 ? ` (usual ~${usual.toFixed(1)})` : ''}.${stall}`);
   }
+  const hand = handFeedback(d);
+  if (hand) coachLive.textContent += ` ${hand}`;
 }
 
 function analyse(ds: number[][], seconds?: number): Tip[] {
@@ -237,7 +239,7 @@ function analyse(ds: number[][], seconds?: number): Tip[] {
     kind: 'good', title: 'No obvious problems',
     body: 'Keep going. More drags give the coach more to go on.',
   });
-  return tips;
+  return [...tips, ...handTips(ds)];
 }
 
 function renderTips(tips: Tip[]): void {
@@ -706,14 +708,818 @@ $<HTMLButtonElement>('kofi').onclick = () => window.cps?.openKofi();
 const guideBtn = $<HTMLButtonElement>('guide-btn');
 const guide = $<HTMLElement>('guide');
 const sideMain = $<HTMLDivElement>('side-main');
-guideBtn.onclick = () => {
-  const open = !!guide.hidden;
-  guide.hidden = !open;
-  sideMain.hidden = open;
-  guideBtn.classList.toggle('active', open);
-  guideBtn.textContent = open ? 'Back to practice' : 'How to drag click';
-  if (open) guide.scrollTop = 0;
+guideBtn.onclick = () => showPanel(guide.hidden ? 'guide' : null);
+
+// --- Hand tracking ----------------------------------------------------------------
+// A side-on camera watches the clicking hand. MediaPipe finds 21 points on the hand
+// in every frame (all on this PC, nothing is sent anywhere), and each drag is matched
+// to the frames recorded while it happened.
+//
+// Calibration marks the fingertip at the back and the front edge of the button. That
+// gives the button's direction in the picture (angles read 0° = flat along the button,
+// 90° = straight down) and its length, so a fingertip position can be described as a
+// spot on the button. Other distances are in hand-lengths (wrist to index knuckle,
+// roughly 9cm on an adult), so moving the camera closer or further doesn't change them.
+
+interface Pt { x: number; y: number }
+interface HandFrame { t: number; lm: Pt[] }
+interface Calibration { back: Pt; front: Pt }
+interface HandMetrics {
+  angle: number; start: number; end: number; travel: number; speed: number; lift: number; turn: number; buttonCm: number;
+}
+interface Vision {
+  FilesetResolver: { forVisionTasks(path: string): Promise<unknown> };
+  HandLandmarker: {
+    createFromOptions(fs: unknown, opts: unknown): Promise<HandLandmarkerInstance>;
+  };
+}
+interface HandLandmarkerInstance {
+  detectForVideo(v: HTMLVideoElement, t: number): { landmarks: { x: number; y: number; z: number }[][] };
+  close(): void;
+}
+interface Window { mpVision?: Vision }
+
+const WRIST = 0, INDEX_MCP = 5, INDEX_PIP = 6, INDEX_TIP = 8;
+const HAND_CM = 9; // typical wrist-to-index-knuckle length, only used to show rough cm
+const FRAME_KEEP_MS = 4000;
+const CAM_KEY = 'handCamera';
+const CALIB_KEY = 'handCalibButton';
+const LIFT = 0.08; // hand-lengths the tip must rise to count as lifting (~0.7cm)
+const SPOT_DIFF = 0.15; // fraction of the button that counts as a different start spot
+
+const handBtn = $<HTMLButtonElement>('hand-btn');
+const handPanel = $<HTMLElement>('hand-panel');
+const camSelect = $<HTMLSelectElement>('cam-select');
+const camBtn = $<HTMLButtonElement>('cam-btn');
+const camStatus = $<HTMLDivElement>('cam-status');
+const markBackBtn = $<HTMLButtonElement>('mark-back');
+const markFrontBtn = $<HTMLButtonElement>('mark-front');
+const calibStatus = $<HTMLDivElement>('calib-status');
+const camBox = $<HTMLDivElement>('cam-box');
+const camVideo = $<HTMLVideoElement>('cam-video');
+const camCanvas = $<HTMLCanvasElement>('cam-canvas');
+const camReadout = $<HTMLDivElement>('cam-readout');
+
+let landmarker: HandLandmarkerInstance | null = null;
+let camStream: MediaStream | null = null;
+let handFrames: HandFrame[] = [];
+let lastHand: Pt[] | null = null;
+let fpsCount = 0;
+let fpsShown = 0;
+let fpsTimer = 0;
+let calib: Calibration | null = load<Calibration | null>(CALIB_KEY, null);
+let pendingBack: Pt | null = null;
+let marking = false;
+// Where this run's best drags start (fraction along the button), drawn on the preview.
+let targetSpot: number | null = null;
+const handMetrics = new WeakMap<number[], HandMetrics | null>();
+
+const sub = (a: Pt, b: Pt): Pt => ({ x: a.x - b.x, y: a.y - b.y });
+const dot = (a: Pt, b: Pt) => a.x * b.x + a.y * b.y;
+const len = (a: Pt) => Math.hypot(a.x, a.y);
+const cm = (handLengths: number) => (Math.abs(handLengths) * HAND_CM).toFixed(1);
+const handScale = (lm: Pt[]) => len(sub(lm[INDEX_MCP], lm[WRIST])) || 1;
+
+// Unit vectors along the button, back to front (u), and pointing up away from it (n).
+function axes(c: Calibration | null = calib): { u: Pt; n: Pt } {
+  let u = { x: 1, y: 0 };
+  if (c) { const v = sub(c.front, c.back); const l = len(v) || 1; u = { x: v.x / l, y: v.y / l }; }
+  let n = { x: u.y, y: -u.x };
+  if (n.y > 0) n = { x: -n.x, y: -n.y }; // image y grows downwards, so "up" has negative y
+  return { u, n };
+}
+
+// 0 = back of the button, 1 = front edge.
+function spotOf(tip: Pt, c: Calibration | null = calib): number {
+  if (!c) return 0;
+  const { u } = axes(c);
+  return dot(sub(tip, c.back), u) / (len(sub(c.front, c.back)) || 1);
+}
+
+function describeSpot(f: number, buttonCm?: number): string {
+  const zone = f < 0.12 ? 'right at the back of the button'
+    : f < 0.38 ? 'in the back third of the button'
+    : f < 0.62 ? 'in the middle of the button'
+    : f < 0.88 ? 'in the front third of the button'
+    : 'right at the front edge of the button';
+  const fromFront = buttonCm && f > 0 && f < 0.95 ? ` (about ${((1 - f) * buttonCm).toFixed(1)}cm from the front edge)` : '';
+  return zone + fromFront;
+}
+
+function loadVision(): Promise<Vision> {
+  if (window.mpVision) return Promise.resolve(window.mpVision);
+  return new Promise((resolve, reject) => {
+    window.addEventListener('mpready', () => (window.mpVision ? resolve(window.mpVision) : reject(new Error('no vision'))), { once: true });
+    const s = document.createElement('script');
+    s.type = 'module';
+    s.src = 'hand-loader.mjs';
+    s.onerror = () => reject(new Error('Could not load the hand tracker'));
+    document.head.appendChild(s);
+  });
+}
+
+async function listCameras(): Promise<void> {
+  const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+  const saved = load<string>(CAM_KEY, '');
+  camSelect.innerHTML = '';
+  if (!cams.length) {
+    camSelect.appendChild(el('option', '', 'No cameras found'));
+    return;
+  }
+  cams.forEach((c, i) => {
+    const o = el('option', '', c.label || `Camera ${i + 1}`) as HTMLOptionElement;
+    o.value = c.deviceId;
+    camSelect.appendChild(o);
+  });
+  if (cams.some((c) => c.deviceId === saved)) camSelect.value = saved;
+}
+
+async function startCamera(): Promise<void> {
+  camBtn.disabled = true;
+  camStatus.textContent = 'Starting camera and hand tracker…';
+  try {
+    const vision = await loadVision();
+    if (!landmarker) {
+      const base = new URL('vendor/mediapipe/', location.href).href;
+      const fileset = await vision.FilesetResolver.forVisionTasks(base + 'wasm');
+      landmarker = await vision.HandLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: base + 'hand_landmarker.task', delegate: 'GPU' },
+        runningMode: 'VIDEO', numHands: 1,
+      });
+    }
+    const deviceId = camSelect.value;
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: deviceId ? { exact: deviceId } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 60 } },
+    });
+    store(CAM_KEY, deviceId);
+    camVideo.srcObject = camStream;
+    await camVideo.play();
+    await listCameras(); // labels only appear once permission is granted
+    camBox.hidden = false;
+    handFrames = [];
+    fpsTimer = window.setInterval(() => { fpsShown = fpsCount; fpsCount = 0; renderCamStatus(); }, 1000);
+    camVideo.requestVideoFrameCallback(onFrame);
+  } catch (err) {
+    stopCamera();
+    camStatus.textContent = `Couldn't start the camera: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  camBtn.disabled = false;
+  renderCamStatus();
+}
+
+function stopCamera(): void {
+  camStream?.getTracks().forEach((t) => t.stop());
+  camStream = null;
+  camVideo.srcObject = null;
+  camBox.hidden = true;
+  clearInterval(fpsTimer);
+  lastHand = null;
+  clearRecordBuffer();
+  renderCamStatus();
+}
+
+function onFrame(now: DOMHighResTimeStamp, meta: VideoFrameCallbackMetadata): void {
+  if (!camStream || !landmarker) return;
+  // captureTime is when the camera took the frame, in the same clock as click times.
+  const t = meta.captureTime ?? now;
+  const res = landmarker.detectForVideo(camVideo, now);
+  const w = camVideo.videoWidth;
+  const h = camVideo.videoHeight;
+  const hand = res.landmarks[0];
+  lastHand = hand ? hand.map((p) => ({ x: p.x * w, y: p.y * h })) : null;
+  if (lastHand) handFrames.push({ t, lm: lastHand });
+  while (handFrames.length && handFrames[0].t < t - FRAME_KEEP_MS) handFrames.shift();
+  if (recording) bufferFrame(t);
+  fpsCount++;
+  drawOverlay();
+  camVideo.requestVideoFrameCallback(onFrame);
+}
+
+function fingerAngle(lm: Pt[], c: Calibration | null = calib): number {
+  const { u, n } = axes(c);
+  const v = sub(lm[INDEX_TIP], lm[INDEX_PIP]);
+  return (Math.atan2(-dot(v, n), Math.abs(dot(v, u))) * 180) / Math.PI;
+}
+
+// MediaPipe's hand skeleton (joint pairs), kept here so replays can draw it without
+// loading the tracker.
+const HAND_BONES = [[0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
+  [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [0, 17], [17, 18], [18, 19], [19, 20]];
+
+type Mark = 'hand' | 'finger' | 'button' | 'target' | 'flash';
+const ALL_MARKS: Record<Mark, boolean> = { hand: true, finger: true, button: true, target: true, flash: true };
+
+// Shared by the live preview and replays: hand skeleton, measured finger part, the
+// calibrated button and a target start spot, each of which can be switched off.
+function drawHand(ctx: CanvasRenderingContext2D, w: number, lm: Pt[] | null, c: Calibration | null, target: number | null,
+  show: Record<Mark, boolean> = ALL_MARKS): void {
+  const lw = Math.max(2, w / 400);
+  if (c && show.button) {
+    ctx.strokeStyle = 'rgba(240,165,68,.85)';
+    ctx.lineWidth = lw;
+    ctx.setLineDash([lw * 3, lw * 2]);
+    ctx.beginPath();
+    ctx.moveTo(c.back.x, c.back.y);
+    ctx.lineTo(c.front.x, c.front.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (c && target !== null && show.target) {
+    const p = { x: c.back.x + (c.front.x - c.back.x) * target, y: c.back.y + (c.front.y - c.back.y) * target };
+    ctx.strokeStyle = '#3ecf8e';
+    ctx.lineWidth = lw * 1.5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, lw * 6, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  if (!lm) return;
+  if (show.hand) {
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = 'rgba(255,255,255,.55)';
+    for (const [a, b] of HAND_BONES) {
+      ctx.beginPath();
+      ctx.moveTo(lm[a].x, lm[a].y);
+      ctx.lineTo(lm[b].x, lm[b].y);
+      ctx.stroke();
+    }
+  }
+  if (show.finger) {
+    ctx.strokeStyle = '#3ecf8e';
+    ctx.lineWidth = lw * 2.5;
+    ctx.beginPath();
+    ctx.moveTo(lm[INDEX_PIP].x, lm[INDEX_PIP].y);
+    ctx.lineTo(lm[INDEX_TIP].x, lm[INDEX_TIP].y);
+    ctx.stroke();
+    ctx.fillStyle = '#3ecf8e';
+    ctx.beginPath();
+    ctx.arc(lm[INDEX_TIP].x, lm[INDEX_TIP].y, lw * 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawOverlay(): void {
+  const w = camVideo.videoWidth;
+  const h = camVideo.videoHeight;
+  if (camCanvas.width !== w) camCanvas.width = w;
+  if (camCanvas.height !== h) camCanvas.height = h;
+  const ctx = camCanvas.getContext('2d');
+  if (!ctx) return;
+  ctx.clearRect(0, 0, w, h);
+  drawHand(ctx, w, lastHand, calib, targetSpot);
+  const rec = recording ? '● REC · ' : '';
+  if (!lastHand) camReadout.textContent = `${rec}No hand in view`;
+  else if (!calib) camReadout.textContent = `${rec}Calibrate for angles and spots`;
+  else camReadout.textContent = `${rec}Finger ${Math.round(fingerAngle(lastHand))}° · tip ${describeSpot(spotOf(lastHand[INDEX_TIP])).replace(' of the button', '')}`;
+}
+
+function renderCamStatus(): void {
+  const on = !!camStream;
+  camBtn.textContent = on ? 'Stop camera' : 'Start camera';
+  camSelect.disabled = on;
+  markBackBtn.disabled = !on || marking;
+  markFrontBtn.disabled = !on || marking || !pendingBack;
+  handBtn.classList.toggle('live', on);
+  if (on) {
+    camStatus.textContent = `Camera on · ${fpsShown} fps · ${lastHand ? 'hand found' : 'no hand in view'}` +
+      (fpsShown && fpsShown < 25 ? ' · low frame rate, try better lighting or a 60fps setting' : '');
+  } else if (!camStatus.textContent?.startsWith("Couldn't")) {
+    camStatus.textContent = 'Camera off.';
+  }
+  if (!marking) {
+    calibStatus.textContent = pendingBack ? 'Back marked ✓. Now mark the front edge.'
+      : calib ? 'Calibrated ✓ (do it again if you move the camera)' : 'Not calibrated yet.';
+  }
+  renderReplayCount();
+}
+
+// Counts down so the hand can get back on the mouse, then takes the median fingertip
+// position over the last half second.
+function markPoint(which: 'back' | 'front'): void {
+  marking = true;
+  renderCamStatus();
+  let left = 3;
+  const where = which === 'back' ? 'at the back of the button (the end nearest your palm)' : 'on the front edge of the button';
+  const tick = () => {
+    if (left > 0) {
+      calibStatus.textContent = `Hold your fingertip ${where}… ${left}`;
+      left--;
+      setTimeout(tick, 1000);
+      return;
+    }
+    marking = false;
+    const now = performance.now();
+    const tips = handFrames.filter((f) => f.t >= now - 500).map((f) => f.lm[INDEX_TIP]);
+    if (!tips.length) {
+      renderCamStatus();
+      calibStatus.textContent = "Couldn't see your hand. Keep your whole hand in the camera view and try again.";
+      return;
+    }
+    const p = { x: median(tips.map((q) => q.x)), y: median(tips.map((q) => q.y)) };
+    if (which === 'back') {
+      pendingBack = p;
+    } else if (pendingBack) {
+      const lm = handFrames[handFrames.length - 1].lm;
+      if (len(sub(p, pendingBack)) < handScale(lm) * 0.2) {
+        renderCamStatus();
+        calibStatus.textContent = 'Those two spots are too close together. Mark the very back and the very front of the button.';
+        return;
+      }
+      calib = { back: pendingBack, front: p };
+      pendingBack = null;
+      store(CALIB_KEY, calib);
+    }
+    renderCamStatus();
+  };
+  tick();
+}
+
+function measureDrag(d: number[]): HandMetrics | null {
+  if (!camStream) return null;
+  const fs = handFrames.filter((f) => f.t >= d[0] - 40 && f.t <= d[d.length - 1] + 40);
+  if (!fs.length) return null;
+  const { u, n } = axes();
+  const first = fs[0].lm;
+  const last = fs[fs.length - 1].lm;
+  const scale = median(fs.map((f) => handScale(f.lm)));
+  const angles = fs.map((f) => fingerAngle(f.lm));
+  const up = (f: HandFrame) => dot(f.lm[INDEX_TIP], n) / scale;
+  const dt = (fs[fs.length - 1].t - fs[0].t) / 1000;
+  const travel = Math.abs(dot(last[INDEX_TIP], u) - dot(first[INDEX_TIP], u)) / scale;
+  return {
+    angle: median(angles),
+    start: spotOf(first[INDEX_TIP]),
+    end: spotOf(last[INDEX_TIP]),
+    travel,
+    speed: dt > 0 ? travel / dt : 0,
+    lift: Math.max(...fs.map(up)) - up(fs[0]),
+    turn: Math.max(...angles) - Math.min(...angles),
+    buttonCm: calib ? (len(sub(calib.front, calib.back)) / scale) * HAND_CM : 0,
+  };
+}
+
+// Drags with camera data so far this run, paired with their click counts.
+function handSamples(ds: number[][]): { n: number; m: HandMetrics }[] {
+  return ds.flatMap((d) => { const m = handMetrics.get(d); return m ? [{ n: d.length, m }] : []; });
+}
+
+interface GroupStats { angle: number; start: number; end: number; travel: number; speed: number; buttonCm: number }
+
+// Average measurements of the best and worst thirds of drags, by clicks.
+function bestWorst(samples: { n: number; m: HandMetrics }[]): { best: GroupStats; worst: GroupStats } {
+  const sorted = [...samples].sort((a, b) => b.n - a.n);
+  const k = Math.max(2, Math.floor(sorted.length / 3));
+  const stats = (xs: { m: HandMetrics }[]): GroupStats => ({
+    angle: mean(xs.map((x) => x.m.angle)), start: mean(xs.map((x) => x.m.start)), end: mean(xs.map((x) => x.m.end)),
+    travel: mean(xs.map((x) => x.m.travel)), speed: mean(xs.map((x) => x.m.speed)), buttonCm: mean(xs.map((x) => x.m.buttonCm)),
+  });
+  return { best: stats(sorted.slice(0, k)), worst: stats(sorted.slice(-k)) };
+}
+
+// One sentence about the hand on the drag that just ended, or '' if nothing useful.
+function handFeedback(d: number[]): string {
+  if (!camStream) return '';
+  const m = measureDrag(d);
+  handMetrics.set(d, m);
+  // Queued so rankings from quick back-to-back drags don't interleave.
+  if (m && recording) setTimeout(() => { clipQueue = clipQueue.then(() => keepClip(d, m)).catch(() => {}); }, 350);
+  if (!m) return "(Couldn't see your hand on that one.)";
+  if (!calib) return '(Calibrate in the Hand tracking panel to get angle and position feedback.)';
+
+  const samples = handSamples(drags);
+  if (samples.length >= 8) targetSpot = bestWorst(samples).best.start;
+  if (m.lift > LIFT) return `Your fingertip lifted about ${cm(m.lift)}cm partway through, so keep it pressed to the end.`;
+
+  const earlier = handSamples(drags.slice(0, -1));
+  if (earlier.length >= 8) {
+    const { best } = bestWorst(earlier);
+    if (Math.abs(m.angle - best.angle) >= 10) {
+      return `Finger at ${Math.round(m.angle)}°; your best drags are around ${Math.round(best.angle)}°.`;
+    }
+    if (Math.abs(m.start - best.start) >= SPOT_DIFF) {
+      return `You started ${describeSpot(m.start)}; your best drags start ${describeSpot(best.start, best.buttonCm)}.`;
+    }
+    return `Angle ${Math.round(m.angle)}°, started ${describeSpot(m.start)}, just like your best drags.`;
+  }
+  if (m.angle < 25) return `Finger is quite flat (${Math.round(m.angle)}°), so try tilting it up towards 45°.`;
+  if (m.angle > 70) return `Finger is very steep (${Math.round(m.angle)}°), so try lowering it a little.`;
+  if (m.turn > 20) return `Your finger angle changed by ${Math.round(m.turn)}° during the drag. Try to hold it steady.`;
+  return `Angle ${Math.round(m.angle)}°, started ${describeSpot(m.start)}.`;
+}
+
+function handTips(ds: number[][]): Tip[] {
+  const samples = handSamples(ds);
+  if (!calib || samples.length < 8) {
+    return camStream ? [{ kind: 'info', title: 'Hand tracking', body: `${samples.length} drags tracked so far. After 8 it compares your best and worst drags.` }] : [];
+  }
+  const tips: Tip[] = [];
+  const { best: b, worst: w } = bestWorst(samples);
+  const diffs: string[] = [];
+  if (Math.abs(b.angle - w.angle) >= 8) diffs.push(`a ${b.angle > w.angle ? 'steeper' : 'flatter'} finger (${Math.round(b.angle)}° vs ${Math.round(w.angle)}°)`);
+  if (Math.abs(b.start - w.start) >= SPOT_DIFF) diffs.push(`started ${describeSpot(b.start, b.buttonCm)} instead of ${describeSpot(w.start)}`);
+  if (w.travel > 0 && Math.abs(b.travel - w.travel) / w.travel >= 0.25) diffs.push(`${b.travel > w.travel ? 'longer' : 'shorter'} drags (~${cm(b.travel)}cm vs ~${cm(w.travel)}cm)`);
+  if (w.speed > 0 && Math.abs(b.speed - w.speed) / w.speed >= 0.3) diffs.push(`${b.speed > w.speed ? 'faster' : 'slower'} drags`);
+  if (diffs.length) {
+    tips.push({ kind: 'good', title: 'What your best drags do differently', body: `Compared with your worst drags, your best ones had ${diffs.join(', ')}. Aim for that.` });
+  } else {
+    tips.push({ kind: 'info', title: 'Best and worst drags look alike on camera', body: 'The difference is probably pressure, which a camera can\'t see. Focus on the pressure sweet spot.' });
+  }
+  tips.push({ kind: 'info', title: 'Your best drags', body: `Start ${describeSpot(b.start, b.buttonCm)} and finish ${describeSpot(b.end)}, with the finger at about ${Math.round(b.angle)}°. The green circle on the camera preview marks the start spot.` });
+
+  const sd = (f: (m: HandMetrics) => number) => { const xs = samples.map((s) => f(s.m)); const a = mean(xs); return Math.sqrt(mean(xs.map((x) => (x - a) ** 2))); };
+  const startSd = sd((m) => m.start);
+  if (startSd >= SPOT_DIFF) tips.push({ kind: 'fix', title: 'Your start spot moves around', body: `It varied by about ${(startSd * b.buttonCm).toFixed(1)}cm between drags. Start from the same place every time.` });
+  const angleSd = sd((m) => m.angle);
+  if (angleSd >= 10) tips.push({ kind: 'fix', title: 'Your finger angle varies', body: `It changed by about ${Math.round(angleSd)}° between drags. Keep the same angle for every drag.` });
+  const lifts = samples.filter((s) => s.m.lift > LIFT).length / samples.length;
+  if (lifts >= 0.3) tips.push({ kind: 'fix', title: 'Fingertip lifts partway', body: `${Math.round(lifts * 100)}% of drags lifted off partway. Keep light, steady contact to the end.` });
+  return tips;
+}
+
+// --- Recording and replays ----------------------------------------------------------
+// While recording, a short rolling buffer of small video frames is kept in memory.
+// When a drag ranks among the session's 3 best or 3 worst, its frames are saved as JPEGs
+// in IndexedDB (on this PC only) with its measurements and the reasons it was good or bad.
+
+interface ClipFrame { t: number; img: Blob; lm: Pt[] | null }
+interface ClipMeta {
+  id: number; session: number; at: number; clicks: number; kind: 'best' | 'worst';
+  metrics: HandMetrics; reasons: string[]; clickTimes: number[]; w: number; h: number;
+  calib: Calibration | null; target: number | null; duration: number;
+}
+
+const REC_W = 360;
+const REC_KEEP_MS = 3000;
+const REC_PAD_MS = 250; // video kept either side of the drag
+const KEEP_EACH = 3;
+const KEEP_SESSIONS = 10;
+const REC_KEY = 'handRecord';
+
+const recToggle = $<HTMLInputElement>('rec-toggle');
+const replayCount = $<HTMLButtonElement>('replay-open');
+const camReplayBtn = $<HTMLButtonElement>('cam-replays');
+
+let recording = load<boolean>(REC_KEY, false);
+let recBuffer: { t: number; bmp: ImageBitmap }[] = [];
+let recSessionId = 0;
+let recSessionDrags: number[][] | null = null;
+// Drags ranked this session; clipId is set once its clip has been saved.
+let recRanked: { d: number[]; clicks: number; m: HandMetrics; clipId: number | null }[] = [];
+let clipCount = 0;
+let clipQueue: Promise<void> = Promise.resolve();
+let dbp: Promise<IDBDatabase> | null = null;
+
+function db(): Promise<IDBDatabase> {
+  dbp ??= new Promise((resolve, reject) => {
+    const req = indexedDB.open('drag-trainer', 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore('clips', { keyPath: 'id' });
+      req.result.createObjectStore('frames');
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbp;
+}
+
+async function tx<T>(stores: string[], mode: IDBTransactionMode, fn: (t: IDBTransaction) => IDBRequest<T> | void): Promise<T | undefined> {
+  const d = await db();
+  return new Promise((resolve, reject) => {
+    const t = d.transaction(stores, mode);
+    const req = fn(t);
+    t.oncomplete = () => resolve(req ? req.result : undefined);
+    t.onerror = () => reject(t.error);
+  });
+}
+
+const allClips = async () => ((await tx<ClipMeta[]>(['clips'], 'readonly', (t) => t.objectStore('clips').getAll())) ?? []);
+const clipFrames = async (id: number) => (await tx<ClipFrame[]>(['frames'], 'readonly', (t) => t.objectStore('frames').get(id))) ?? [];
+const deleteClip = (id: number) => tx(['clips', 'frames'], 'readwrite', (t) => { t.objectStore('clips').delete(id); t.objectStore('frames').delete(id); });
+
+function bufferFrame(t: number): void {
+  const h = Math.round((REC_W * camVideo.videoHeight) / (camVideo.videoWidth || 1));
+  createImageBitmap(camVideo, { resizeWidth: REC_W, resizeHeight: h, resizeQuality: 'medium' }).then((bmp) => {
+    recBuffer.push({ t, bmp });
+    while (recBuffer.length && recBuffer[0].t < t - REC_KEEP_MS) recBuffer.shift()!.bmp.close();
+  }).catch(() => {});
+}
+
+function clearRecordBuffer(): void {
+  recBuffer.forEach((f) => f.bmp.close());
+  recBuffer = [];
+}
+
+// Why a saved drag was good or bad, compared with the rest of its session.
+function clipReasons(m: HandMetrics, clicks: number, kind: 'best' | 'worst', s: { best: GroupStats; worst: GroupStats } | null): string[] {
+  const r: string[] = [];
+  const a = Math.round(m.angle);
+  if (kind === 'best') {
+    r.push(`${clicks} clicks, one of your best drags this session.`);
+    if (s && Math.abs(m.angle - s.worst.angle) >= 8) r.push(`Finger at ${a}°, ${Math.round(Math.abs(m.angle - s.worst.angle))}° ${m.angle > s.worst.angle ? 'steeper' : 'flatter'} than your worst drags.`);
+    else r.push(`Finger at ${a}°${a >= 30 && a <= 60 ? ', a good middle angle' : ''}.`);
+    r.push(`Started ${describeSpot(m.start, m.buttonCm)}` +
+      (s && Math.abs(m.start - s.worst.start) >= SPOT_DIFF ? `, while your worst drags started ${describeSpot(s.worst.start)}.` : '.'));
+    r.push(`Dragged about ${cm(m.travel)}cm, finishing ${describeSpot(m.end)}.`);
+    if (m.turn < 12) r.push('Kept the finger angle steady the whole way.');
+    if (m.lift < LIFT / 2) r.push('Fingertip stayed down from start to finish.');
+    return r;
+  }
+  r.push(`${clicks} click${clicks === 1 ? '' : 's'}, one of your worst drags this session.`);
+  const before = r.length;
+  if (s && Math.abs(m.angle - s.best.angle) >= 8) r.push(`Finger at ${a}°, ${Math.round(Math.abs(m.angle - s.best.angle))}° ${m.angle < s.best.angle ? 'flatter' : 'steeper'} than your best drags (~${Math.round(s.best.angle)}°).`);
+  else if (!s && a < 25) r.push(`Finger was quite flat (${a}°).`);
+  else if (!s && a > 70) r.push(`Finger was very steep (${a}°).`);
+  if (s && Math.abs(m.start - s.best.start) >= SPOT_DIFF) r.push(`Started ${describeSpot(m.start)}; your best drags start ${describeSpot(s.best.start, s.best.buttonCm)}.`);
+  if (m.lift > LIFT) r.push(`Fingertip lifted about ${cm(m.lift)}cm partway through.`);
+  if (m.turn > 20) r.push(`Finger angle wobbled by ${Math.round(m.turn)}° during the drag.`);
+  if (s && s.best.travel > 0 && m.travel < s.best.travel * 0.6) r.push(`Short drag: about ${cm(m.travel)}cm, against ~${cm(s.best.travel)}cm on your best drags.`);
+  if (r.length === before) r.push("On camera it looks like your good drags, so the difference was probably pressure, which the camera can't see.");
+  return r;
+}
+
+async function keepClip(d: number[], m: HandMetrics): Promise<void> {
+  if (!recording || !calib) return;
+  if (recSessionDrags !== drags) {
+    // A new run (Reset, new mode or new practice session) starts a new replay session.
+    recSessionDrags = drags;
+    recSessionId = Date.now();
+    recRanked = [];
+    await pruneSessions();
+  }
+  recRanked.push({ d, clicks: d.length, m, clipId: null });
+  const byBest = [...recRanked].sort((a, b) => b.clicks - a.clicks);
+  const best = byBest.slice(0, KEEP_EACH);
+  const worst = byBest.slice(KEEP_EACH).slice(-KEEP_EACH);
+  const kindOf = (x: (typeof recRanked)[number]) => (best.includes(x) ? 'best' : worst.includes(x) ? 'worst' : null);
+  const stats = recRanked.length >= 6 ? bestWorst(recRanked.map((x) => ({ n: x.clicks, m: x.m }))) : null;
+
+  for (const x of recRanked) {
+    const kind = kindOf(x);
+    if (!kind && x.clipId !== null) { await deleteClip(x.clipId); x.clipId = null; }
+  }
+  const entry = recRanked[recRanked.length - 1];
+  if (kindOf(entry) && entry.clipId === null) entry.clipId = await saveClip(entry.d, entry.m);
+  // Rankings and comparisons shift as the session goes on, so refresh every kept clip.
+  for (const x of recRanked) {
+    const kind = kindOf(x);
+    if (!kind || x.clipId === null) continue;
+    const id = x.clipId;
+    const meta = (await tx<ClipMeta>(['clips'], 'readonly', (t) => t.objectStore('clips').get(id)));
+    if (!meta) continue;
+    meta.kind = kind;
+    meta.reasons = clipReasons(x.m, x.clicks, kind, stats);
+    meta.target = stats ? stats.best.start : null;
+    await tx(['clips'], 'readwrite', (t) => { t.objectStore('clips').put(meta); });
+  }
+  renderReplayCount();
+}
+
+async function saveClip(d: number[], m: HandMetrics): Promise<number | null> {
+  const t0 = d[0] - REC_PAD_MS;
+  const t1 = d[d.length - 1] + REC_PAD_MS;
+  const src = recBuffer.filter((f) => f.t >= t0 && f.t <= t1);
+  if (src.length < 2) return null;
+  const w = src[0].bmp.width;
+  const h = src[0].bmp.height;
+  const k = w / (camVideo.videoWidth || w);
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  const frames: ClipFrame[] = [];
+  for (const f of src) {
+    ctx.drawImage(f.bmp, 0, 0);
+    const img = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.8 });
+    // Nearest tracked hand position, scaled down to the clip's size.
+    const near = handFrames.reduce<HandFrame | null>((b, x) => (Math.abs(x.t - f.t) < 40 && (!b || Math.abs(x.t - f.t) < Math.abs(b.t - f.t)) ? x : b), null);
+    frames.push({ t: f.t - t0, img, lm: near ? near.lm.map((p) => ({ x: p.x * k, y: p.y * k })) : null });
+  }
+  const id = Date.now() * 10 + (clipCount++ % 10);
+  const meta: ClipMeta = {
+    id, session: recSessionId, at: Date.now(), clicks: d.length, kind: 'best', metrics: m, reasons: [],
+    clickTimes: d.map((t) => t - t0), w, h, duration: t1 - t0, target: null,
+    calib: calib ? { back: { x: calib.back.x * k, y: calib.back.y * k }, front: { x: calib.front.x * k, y: calib.front.y * k } } : null,
+  };
+  await tx(['clips', 'frames'], 'readwrite', (t) => { t.objectStore('clips').put(meta); t.objectStore('frames').put(frames, id); });
+  return id;
+}
+
+async function pruneSessions(): Promise<void> {
+  const clips = await allClips();
+  const sessions = [...new Set(clips.map((c) => c.session))].sort((a, b) => b - a);
+  const drop = new Set(sessions.slice(KEEP_SESSIONS - 1));
+  for (const c of clips) if (drop.has(c.session)) await deleteClip(c.id);
+}
+
+async function renderReplayCount(): Promise<void> {
+  const n = (await allClips().catch(() => [])).length;
+  replayCount.textContent = n ? `Open replays (${n})` : 'Open replays';
+  camReplayBtn.textContent = n ? `Replays (${n})` : 'Replays';
+}
+
+recToggle.checked = recording;
+recToggle.onchange = () => {
+  recording = recToggle.checked;
+  store(REC_KEY, recording);
+  if (!recording) clearRecordBuffer();
 };
+
+// --- Replay player ------------------------------------------------------------------
+
+const replays = $<HTMLDivElement>('replays');
+const replayList = $<HTMLDivElement>('replay-list');
+const replayCanvas = $<HTMLCanvasElement>('replay-canvas');
+const replayInfo = $<HTMLDivElement>('replay-info');
+const replayReasons = $<HTMLUListElement>('replay-reasons');
+const replayPlay = $<HTMLButtonElement>('replay-play');
+const replayScrub = $<HTMLInputElement>('replay-scrub');
+const replaySpeeds = $<HTMLDivElement>('replay-speeds');
+const replayClicks = $<HTMLSpanElement>('replay-clicks');
+const replayMarkRow = $<HTMLDivElement>('replay-marks');
+const MARKS_KEY = 'replayMarkings';
+let marks: Record<Mark, boolean> = { ...ALL_MARKS, ...load<Partial<Record<Mark, boolean>>>(MARKS_KEY, {}) };
+
+let current: { meta: ClipMeta; frames: { t: number; bmp: ImageBitmap; lm: Pt[] | null }[] } | null = null;
+let playhead = 0;
+let speed = 0.25;
+let playing = false;
+let replayRaf = 0;
+let lastTick = 0;
+
+async function openReplays(): Promise<void> {
+  replays.hidden = false;
+  const clips = (await allClips()).sort((a, b) => b.session - a.session || (a.kind === b.kind ? b.clicks - a.clicks : a.kind === 'best' ? -1 : 1));
+  replayList.innerHTML = '';
+  if (!clips.length) {
+    replayList.appendChild(el('p', 'summary', 'No replays yet. Turn on "Record my drags" in the Hand tracking panel, then practise in Drag practice mode.'));
+    drawReplayEmpty();
+    return;
+  }
+  let session = -1;
+  for (const c of clips) {
+    if (c.session !== session) {
+      session = c.session;
+      replayList.appendChild(el('div', 'replay-session', new Date(session).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })));
+    }
+    const b = el('button', `replay-item ${c.kind}`, `${c.kind === 'best' ? 'Best' : 'Worst'} · ${c.clicks} click${c.clicks === 1 ? '' : 's'}`) as HTMLButtonElement;
+    b.onclick = () => { replayList.querySelectorAll('.replay-item').forEach((x) => x.classList.remove('active')); b.classList.add('active'); loadClip(c); };
+    replayList.appendChild(b);
+  }
+  (replayList.querySelector('.replay-item') as HTMLButtonElement | null)?.click();
+}
+
+function closeReplays(): void {
+  replays.hidden = true;
+  playing = false;
+  cancelAnimationFrame(replayRaf);
+  current?.frames.forEach((f) => f.bmp.close());
+  current = null;
+}
+
+function drawReplayEmpty(): void {
+  const ctx = replayCanvas.getContext('2d');
+  if (ctx) ctx.clearRect(0, 0, replayCanvas.width, replayCanvas.height);
+  replayInfo.textContent = '';
+  replayReasons.innerHTML = '';
+  replayClicks.textContent = '';
+}
+
+async function loadClip(meta: ClipMeta): Promise<void> {
+  playing = false;
+  cancelAnimationFrame(replayRaf);
+  current?.frames.forEach((f) => f.bmp.close());
+  const raw = await clipFrames(meta.id);
+  const frames = await Promise.all(raw.map(async (f) => ({ t: f.t, lm: f.lm, bmp: await createImageBitmap(f.img) })));
+  current = { meta, frames };
+  replayCanvas.width = meta.w;
+  replayCanvas.height = meta.h;
+  replayScrub.max = String(Math.round(meta.duration));
+  const m = meta.metrics;
+  replayInfo.textContent = `${meta.kind === 'best' ? 'Best' : 'Worst'} drag · ${meta.clicks} click${meta.clicks === 1 ? '' : 's'} · ` +
+    `finger ${Math.round(m.angle)}° · ~${cm(m.travel)}cm in ${((meta.clickTimes[meta.clickTimes.length - 1] - meta.clickTimes[0]) / 1000).toFixed(2)}s`;
+  replayInfo.className = `replay-info ${meta.kind}`;
+  replayReasons.innerHTML = '';
+  for (const r of meta.reasons) replayReasons.appendChild(el('li', '', r));
+  seek(0);
+  play();
+}
+
+function seek(ms: number): void {
+  if (!current) return;
+  playhead = Math.max(0, Math.min(ms, current.meta.duration));
+  replayScrub.value = String(Math.round(playhead));
+  drawReplay();
+}
+
+function drawReplay(): void {
+  if (!current) return;
+  const ctx = replayCanvas.getContext('2d');
+  if (!ctx) return;
+  const { meta, frames } = current;
+  let f = frames[0];
+  for (const x of frames) if (x.t <= playhead) f = x;
+  ctx.drawImage(f.bmp, 0, 0);
+  drawHand(ctx, meta.w, f.lm, meta.calib, meta.target, marks);
+  const done = meta.clickTimes.filter((t) => t <= playhead).length;
+  // A click landing in the last 40ms of playback flashes the frame.
+  if (marks.flash && meta.clickTimes.some((t) => t <= playhead && t > playhead - 40)) {
+    ctx.strokeStyle = '#3ecf8e';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(3, 3, meta.w - 6, meta.h - 6);
+  }
+  replayClicks.textContent = `Clicks ${done} / ${meta.clicks} · ${(playhead / 1000).toFixed(2)}s`;
+}
+
+function play(): void {
+  if (!current) return;
+  if (playhead >= current.meta.duration) seek(0);
+  playing = true;
+  replayPlay.textContent = 'Pause';
+  lastTick = performance.now();
+  const step = (now: number) => {
+    if (!playing || !current) return;
+    playhead += (now - lastTick) * speed;
+    lastTick = now;
+    if (playhead >= current.meta.duration) {
+      seek(current.meta.duration);
+      playing = false;
+      replayPlay.textContent = 'Play';
+      return;
+    }
+    seek(playhead);
+    replayRaf = requestAnimationFrame(step);
+  };
+  replayRaf = requestAnimationFrame(step);
+}
+
+function pause(): void {
+  playing = false;
+  replayPlay.textContent = 'Play';
+  cancelAnimationFrame(replayRaf);
+}
+
+function stepFrame(dir: 1 | -1): void {
+  if (!current) return;
+  pause();
+  const ts = current.frames.map((f) => f.t);
+  const i = ts.findIndex((t) => t > playhead + 0.5);
+  const cur = i === -1 ? ts.length - 1 : Math.max(0, i - 1);
+  seek(ts[Math.max(0, Math.min(ts.length - 1, cur + dir))]);
+}
+
+function renderMarkButtons(): void {
+  const all = Object.values(marks).every(Boolean);
+  replayMarkRow.querySelectorAll<HTMLButtonElement>('.chip').forEach((b) => {
+    const k = b.dataset.mark as Mark | 'all';
+    b.classList.toggle('active', k === 'all' ? all : marks[k]);
+    b.onclick = () => {
+      if (k === 'all') marks = Object.fromEntries(Object.keys(marks).map((m) => [m, !all])) as Record<Mark, boolean>;
+      else marks[k] = !marks[k];
+      store(MARKS_KEY, marks);
+      renderMarkButtons();
+      drawReplay();
+    };
+  });
+}
+renderMarkButtons();
+replayPlay.onclick = () => (playing ? pause() : play());
+replayScrub.oninput = () => { pause(); seek(Number(replayScrub.value)); };
+$<HTMLButtonElement>('replay-prev').onclick = () => stepFrame(-1);
+$<HTMLButtonElement>('replay-next').onclick = () => stepFrame(1);
+$<HTMLButtonElement>('replay-close').onclick = closeReplays;
+$<HTMLButtonElement>('replay-clear').onclick = async () => {
+  if (!confirm('Delete all saved replays?')) return;
+  for (const c of await allClips()) await deleteClip(c.id);
+  recRanked.forEach((x) => { x.clipId = null; });
+  closeReplays();
+  renderReplayCount();
+};
+replaySpeeds.querySelectorAll<HTMLButtonElement>('.chip').forEach((b) => {
+  b.classList.toggle('active', Number(b.dataset.speed) === speed);
+  b.onclick = () => {
+    speed = Number(b.dataset.speed);
+    replaySpeeds.querySelectorAll('.chip').forEach((x) => x.classList.toggle('active', x === b));
+  };
+});
+replayCount.onclick = () => openReplays();
+camReplayBtn.onclick = () => openReplays();
+window.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !replays.hidden) closeReplays(); });
+
+function showPanel(which: 'guide' | 'hand' | null): void {
+  guide.hidden = which !== 'guide';
+  handPanel.hidden = which !== 'hand';
+  sideMain.hidden = which !== null;
+  guideBtn.classList.toggle('active', which === 'guide');
+  handBtn.classList.toggle('active', which === 'hand');
+  guideBtn.textContent = which === 'guide' ? 'Back to practice' : 'How to drag click';
+  handBtn.textContent = which === 'hand' ? 'Back to practice' : 'Hand tracking';
+  if (which === 'guide') guide.scrollTop = 0;
+  if (which === 'hand') { listCameras().catch(() => {}); renderCamStatus(); }
+}
+
+handBtn.onclick = () => showPanel(handPanel.hidden ? 'hand' : null);
+camBtn.onclick = () => (camStream ? stopCamera() : startCamera());
+markBackBtn.onclick = () => markPoint('back');
+markFrontBtn.onclick = () => markPoint('front');
+renderReplayCount();
 
 renderChips();
 reset();

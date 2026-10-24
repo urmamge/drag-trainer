@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; media-src 'self' blob: mediastream:">
 <title>Drag Trainer</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -42,14 +42,23 @@
     <div class="stat"><span id="drag-count">0</span><label>Drags</label></div>
     <div class="stat"><span id="drag-best">0</span><label>Best drag (all time)</label></div>
   </section>
-  <div id="pad" class="pad"><div id="pad-label"></div></div>
+  <div class="pad-row">
+    <div id="pad" class="pad"><div id="pad-label"></div></div>
+    <div id="cam-box" class="cam-box" hidden>
+      <div class="cam-view"><video id="cam-video" muted playsinline></video><canvas id="cam-canvas"></canvas></div>
+      <div class="cam-row"><div id="cam-readout" class="cam-readout"></div><button id="cam-replays" class="ghost small">Replays</button></div>
+    </div>
+  </div>
   <section class="drags">
     <div id="drag-summary" class="summary"></div>
     <div id="drag-bars" class="drag-bars"></div>
   </section>
   </main>
   <aside class="side">
-  <button id="guide-btn" class="ghost guide-btn">How to drag click</button>
+  <div class="side-buttons">
+    <button id="guide-btn" class="ghost guide-btn">How to drag click</button>
+    <button id="hand-btn" class="ghost guide-btn">Hand tracking</button>
+  </div>
   <div id="side-main" class="side-main">
   <section class="card practice">
     <div class="history-head">
@@ -150,7 +159,133 @@
     </ol>
     <p class="guide-note">Some game servers limit or flag very high CPS, so check the rules where you play.</p>
   </section>
+  <section id="hand-panel" class="card guide" hidden>
+    <h2>Hand tracking</h2>
+    <p class="guide-intro">A camera watches your clicking hand while you drag. After each drag the app tells you what your finger did:
+      its angle, where the drag started, how far and fast it moved, and whether it lifted. The video stays on your PC.
+      It's analysed live and never saved or sent anywhere.</p>
+    <ol class="guide-steps">
+      <li><b>Use your phone as the camera (recommended)</b>
+        <p>A webcam points at your face, but this needs a side view of your hand on the mouse. A phone is easy to place
+          and usually has a better camera.</p>
+        <ul>
+          <li><b>Android and Windows 11:</b> open Settings → Bluetooth &amp; devices → Mobile devices, allow this PC to access
+            your mobile devices, and link your phone with the Link to Windows app. On recent Windows 11 versions the phone's
+            camera then appears in the camera list below.</li>
+          <li><b>Any phone, iPhone or Android:</b> install a free phone-webcam app such as Iriun Webcam, DroidCam or Camo on
+            both your phone and your PC. Connect them over the same Wi-Fi, or a USB cable for less lag, and the phone appears
+            as a camera.</li>
+          <li>If the app has a 60fps option, turn it on. More frames per second means more detail in each drag.</li>
+        </ul>
+      </li>
+      <li><b>Place the camera</b>
+        <ul>
+          <li>Turn the phone on its side (landscape), level with the top of your mouse, about 20–30cm away.</li>
+          <li>Film from the side, so the camera sees your clicking finger side-on. For a right-handed mouse, put it on the left.</li>
+          <li>Keep your whole hand in shot, including your wrist.</li>
+          <li>Use good lighting, and prop the phone up so it can't move.</li>
+        </ul>
+      </li>
+      <li><b>Start the camera</b>
+        <div class="hand-controls"><select id="cam-select"></select><button id="cam-btn" class="ghost small">Start camera</button></div>
+        <div id="cam-status" class="summary"></div>
+        <p>A preview appears next to the click pad, with the measured part of your finger in green.</p>
+      </li>
+      <li><b>Calibrate</b>
+        <p>This tells the app where your button is in the picture. Press <b>Mark back</b>, then within 3 seconds put your
+          clicking fingertip on the back of the button (the end nearest your palm) and hold it still. Then do the same with
+          <b>Mark front</b> and the front edge of the button. Calibrate again if you move the camera.</p>
+        <div class="calib-figs">
+          <figure class="calib-fig">
+            <svg class="calib-svg" viewBox="0 0 260 112" role="img" aria-label="Fingertip on the back of the button">
+          <line class="m-desk" x1="4" y1="92" x2="256" y2="92"/>
+          <path class="m-body" d="M 20 92 C 22 60, 60 40, 120 38 C 180 36, 225 55, 240 92 Z"/>
+          <path class="m-btn" d="M 25 76 C 36 52, 72 40, 127 38"/>
+          <line class="m-seam" x1="127" y1="38" x2="128" y2="47"/>
+          <path class="m-hand" d="M 150 40 C 160 22, 215 20, 256 30 L 256 62 C 225 62, 190 58, 150 40 Z"/>
+          <path class="m-finger" d="M 168 34 C 158 24, 140 20, 131 33"/>
+          <circle class="m-target" cx="131" cy="35" r="8"/>
+          <text class="m-label" x="131" y="14" text-anchor="middle">back of the button</text>
+          <text class="m-end" x="14" y="106">front</text>
+          <text class="m-end" x="246" y="106" text-anchor="end">back</text>
+        </svg>
+            <figcaption><b>Mark back:</b> fingertip on the back of the button, where it meets the body of the mouse.</figcaption>
+          </figure>
+          <figure class="calib-fig">
+            <svg class="calib-svg" viewBox="0 0 260 112" role="img" aria-label="Fingertip on the front edge of the button">
+          <line class="m-desk" x1="4" y1="92" x2="256" y2="92"/>
+          <path class="m-body" d="M 20 92 C 22 60, 60 40, 120 38 C 180 36, 225 55, 240 92 Z"/>
+          <path class="m-btn" d="M 25 76 C 36 52, 72 40, 127 38"/>
+          <line class="m-seam" x1="127" y1="38" x2="128" y2="47"/>
+          <path class="m-hand" d="M 150 40 C 160 22, 215 20, 256 30 L 256 62 C 225 62, 190 58, 150 40 Z"/>
+          <path class="m-finger" d="M 168 34 C 130 30, 80 34, 36 66"/>
+          <circle class="m-target" cx="34" cy="69" r="8"/>
+          <text class="m-label" x="62" y="22" text-anchor="middle">front edge of the button</text>
+          <text class="m-end" x="14" y="106">front</text>
+          <text class="m-end" x="246" y="106" text-anchor="end">back</text>
+        </svg>
+            <figcaption><b>Mark front:</b> fingertip right on the front edge of the button.</figcaption>
+          </figure>
+          <p class="calib-note">Seen from the side, as your camera sees it. The orange line is the button.</p>
+        </div>
+        <div class="hand-controls"><button id="mark-back" class="ghost small" disabled>Mark back</button><button id="mark-front" class="ghost small" disabled>Mark front</button></div>
+        <div id="calib-status" class="summary"></div>
+      </li>
+      <li><b>Record your drags (optional)</b>
+        <label class="check"><input type="checkbox" id="rec-toggle"> Record my drags</label>
+        <p>Saves short clips of your 3 best and 3 worst drags from each session, with what made them good or bad, so you
+          can watch them back in slow motion. Clips are saved only on this PC, and the last 10 sessions are kept.</p>
+        <button id="replay-open" class="ghost small">Open replays</button>
+      </li>
+      <li><b>Drag</b>
+        <p>Go back to practice and use Drag practice mode or a practice session. The Coach adds what your hand did after
+          each drag. After 8 tracked drags it starts comparing your best and worst drags, to show what actually works for you,
+          and a green circle on the preview marks where your best drags start.</p>
+      </li>
+    </ol>
+    <p class="guide-note">The camera can't see pressure or the vibration itself, so some problems won't show up on video.
+      Measurements in cm are rough, based on an average hand size.</p>
+  </section>
   </aside>
+  <div id="replays" class="replays" hidden>
+    <div class="replays-panel">
+      <div class="history-head">
+        <h2>Replays</h2>
+        <div class="header-actions"><button id="replay-clear" class="ghost small">Delete all</button><button id="replay-close" class="ghost small">Close (Esc)</button></div>
+      </div>
+      <div class="replays-body">
+        <div id="replay-list" class="replay-list"></div>
+        <div class="replay-main">
+          <canvas id="replay-canvas" class="replay-canvas"></canvas>
+          <div class="replay-controls">
+            <button id="replay-prev" class="ghost small" title="Previous frame">◀</button>
+            <button id="replay-play" class="ghost small">Play</button>
+            <button id="replay-next" class="ghost small" title="Next frame">▶</button>
+            <input id="replay-scrub" type="range" min="0" max="1000" value="0">
+            <div id="replay-speeds" class="row">
+              <button class="chip small" data-speed="1">1×</button>
+              <button class="chip small" data-speed="0.5">0.5×</button>
+              <button class="chip small" data-speed="0.25">0.25×</button>
+            </div>
+          </div>
+          <div class="replay-meta"><span id="replay-clicks"></span></div>
+          <div class="replay-marks">
+            <span class="label">Markings</span>
+            <div id="replay-marks" class="row">
+              <button class="chip small" data-mark="all">Show all</button>
+              <button class="chip small" data-mark="hand" title="The tracked hand skeleton">Hand</button>
+              <button class="chip small" data-mark="finger" title="The measured part of your finger and its tip">Finger</button>
+              <button class="chip small" data-mark="button" title="The calibrated mouse button">Button line</button>
+              <button class="chip small" data-mark="target" title="Where your best drags start">Target spot</button>
+              <button class="chip small" data-mark="flash" title="Green frame edge when a click lands">Click flash</button>
+            </div>
+          </div>
+          <div id="replay-info" class="replay-info"></div>
+          <ul id="replay-reasons" class="replay-reasons"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
   <script src="../dist/renderer.js"></script>
 </body>
 </html>

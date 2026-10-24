@@ -1,14 +1,14 @@
 {
   "name": "drag-trainer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Learn to drag click: per-drag stats, a coach, practice reminders and a how-to guide",
   "main": "dist/main.js",
   "author": "urmamge",
   "license": "MIT",
   "scripts": {
-    "build": "tsc",
-    "start": "tsc && electron .",
-    "dist": "tsc && electron-builder --win portable --publish never"
+    "build": "node scripts/vendor.mjs && tsc",
+    "start": "node scripts/vendor.mjs && tsc && electron .",
+    "dist": "node scripts/vendor.mjs && tsc && electron-builder --win portable --publish never"
   },
   "build": {
     "appId": "com.urmamge.dragtrainer",
@@ -32,5 +32,8 @@
     "electron": "^45.0.0",
     "electron-builder": "^26.18.0",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "1.1.0"
   }
 }
