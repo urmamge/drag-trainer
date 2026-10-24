@@ -66,6 +66,9 @@ Keep it open (minimizing is fine) if you want practice reminders. Closing the wi
 
 ## Hand tracking setup
 
+> [!NOTE]
+> Hand tracking is a work in progress. Better optimisation and bug fixes are coming in future updates.
+
 *For v1.1 only.* Hand tracking needs a side view of your hand on the mouse, which a webcam pointed at your face can't give. **Using your phone as the camera is recommended**, because it's easy to place and usually has a better camera.
 
 1. **Connect your phone as a camera.**
