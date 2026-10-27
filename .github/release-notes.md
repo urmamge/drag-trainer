@@ -1,16 +1,13 @@
-**Gap check: see the pause before every click.** Steady drag clicking means no dead time between clicks, and this shows you exactly where it goes.
+**Gap check now lets you set how long a pause counts as a gap.** A quick reset between drags no longer counts as a pause.
 
 **Download `Drag-Trainer.exe` below and run it.** There's no installer. Windows may show a "Windows protected your PC" warning the first time because the app isn't code-signed; click **More info → Run anyway**. The [README](https://github.com/urmamge/drag-trainer#is-it-safe) explains why and how to check the file yourself.
 
-Don't want camera features? [v1.0.1](https://github.com/urmamge/drag-trainer/releases/tag/v1.0.1) has everything here except hand tracking and replays. Both versions share the same saved scores.
+Don't want camera features? [v1.0.2](https://github.com/urmamge/drag-trainer/releases/tag/v1.0.2) has everything here except hand tracking and replays. Both versions share the same saved scores.
 
-### New in v1.1.1
-- **Gap check mode.** A bar for every click showing the gap before it, with a 50ms line. It shows your longest gap, how steady your clicking is, and your longest clean run (no gap over 50ms), with an all-time best. The Coach says whether each gap was a reset between drags or a drag fading out, and the session report tells you which one is holding you back.
-- **Timed runs** now show your longest gap too.
-- **Settings menu** with an optional **Bridge coach**: when it's on, Gap check also tells you whether your clicking is steady enough to god bridge in Minecraft. It's off by default.
-- **Camera frame rate picker** (30/60/120/240 fps) in the Hand tracking panel. Higher frame rates catch faster drags, if your camera supports them.
-- Fixed the camera sometimes showing 0 fps after being restarted.
-- Recorded replays are capped at about 120 fps to keep them small.
+### New in v1.1.2
+- **Max gap setting** (Settings → Max gap: 50, 75, 100 or 150ms). Gap check used to count every pause over 50ms as a gap, so a normal reset between drags broke your clean run every time. The default is now 100ms, and clean run, steadiness, the Coach and the chart line all follow the setting. Best clean runs are saved separately for each setting, and your old best stays under 50ms.
+- **Clearer reset tip.** When your gaps come from resets, the Coach now says how to fix them: lift only just off the button, go straight back to the top, and start the next drag as soon as you land.
+- With **Bridge coach** on, the bridging verdicts use your Max gap too, and the guide explains why 100ms is usually fine for bridging.
 
 ### Checking the download
 This exe was built by GitHub Actions straight from the tagged source code. `SHA256SUMS.txt` has its checksum, and the build is attested by GitHub:
