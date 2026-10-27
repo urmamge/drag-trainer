@@ -18,6 +18,14 @@
     <div id="settings" class="card settings" hidden>
       <label class="toggle"><input type="checkbox" id="bridge-coach"> <span><b>Bridge coach</b><br>
         In Gap check, the Coach also tells you if your gaps are short enough to god bridge in Minecraft.</span></label>
+      <div class="setting"><b>Max gap</b>
+        <span>In Gap check, the longest pause between clicks that still counts as steady. 50ms is one Minecraft tick
+          and very strict; 100ms lets a quick reset between drags through.</span>
+        <div id="max-gap" class="row">
+          <button class="chip" data-gap="50">50ms</button><button class="chip" data-gap="75">75ms</button>
+          <button class="chip" data-gap="100">100ms</button><button class="chip" data-gap="150">150ms</button>
+        </div>
+      </div>
     </div>
   </header>
   <section class="controls">
@@ -57,7 +65,7 @@
   <div id="pad" class="pad"><div id="pad-label"></div></div>
   <section id="gap-section" class="drags" hidden>
     <div id="gap-summary" class="summary"></div>
-    <div id="gap-bars" class="gap-bars"><div class="gap-line"><span>50ms</span></div></div>
+    <div id="gap-bars" class="gap-bars"><div id="gap-line" class="gap-line"><span>100ms</span></div></div>
   </section>
   <section id="drag-section" class="drags">
     <div id="drag-summary" class="summary"></div>
@@ -164,8 +172,9 @@
           clean; a very slightly damp fingertip grips better than a bone-dry one.</p>
       </li>
     </ol>
-    <p id="bridge-note" class="guide-note" hidden>Bridging: use Gap check mode. Minecraft runs 20 ticks a second (one every 50ms), and a block
-      can only place on a tick that got a click, so a steady stream with no gap over 50ms beats a fast but uneven one.</p>
+    <p id="bridge-note" class="guide-note" hidden>Bridging: use Gap check mode. A steady stream with no long pauses beats a fast
+      but uneven one. Minecraft runs a tick every 50ms, so a click on every tick (Max gap 50ms) is the strictest target; you walk
+      about one block every 230ms, so a quick reset between drags is usually fine (Max gap 100ms).</p>
     <p class="guide-note">Some game servers limit or flag very high CPS, so check the rules where you play.</p>
   </section>
   </aside>
