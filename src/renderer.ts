@@ -378,8 +378,8 @@ function analyseGaps(ss: number[][]): Tip[] {
   const resets = over.filter((x) => !x.thin).length;
   if (over.length >= 3 && resets >= over.length * 0.6) tips.push({
     kind: 'fix', title: 'Your gaps are the resets between drags',
-    body: `${resets} of ${over.length} long gaps came between drags. Keep your drags long, but start the next one ` +
-      'while the last is still buzzing, so your finger is already back at the top of the button when it ends.',
+    body: `${resets} of ${over.length} long gaps came between drags, while your finger went back to the top of the button. ` +
+      'Make that trip short: lift only just off the button, go straight back and start the next drag the moment you land.',
   });
   else if (over.length >= 3 && resets <= over.length * 0.4) tips.push({
     kind: 'fix', title: 'Your drags thin out before they end',
