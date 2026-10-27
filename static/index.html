@@ -12,7 +12,12 @@
     <h1>Drag Trainer</h1>
     <div class="header-actions">
       <button id="kofi" class="ghost kofi" title="Opens ko-fi.com/urmamge in your browser">Support me on Ko-fi</button>
+      <button id="settings-btn" class="ghost">Settings</button>
       <button id="reset" class="ghost">Reset (R)</button>
+    </div>
+    <div id="settings" class="card settings" hidden>
+      <label class="toggle"><input type="checkbox" id="bridge-coach"> <span><b>Bridge coach</b><br>
+        In Gap check, the Coach also tells you if your gaps are short enough to god bridge in Minecraft.</span></label>
     </div>
   </header>
   <section class="controls">
@@ -20,6 +25,7 @@
       <div id="modes" class="row">
         <button class="chip" data-mode="timed">Timed</button>
         <button class="chip" data-mode="drag">Drag practice</button>
+        <button class="chip" data-mode="gaps">Gap check</button>
       </div>
     </div>
     <div class="group"><span class="label">Button</span>
@@ -42,8 +48,18 @@
     <div class="stat"><span id="drag-count">0</span><label>Drags</label></div>
     <div class="stat"><span id="drag-best">0</span><label>Best drag (all time)</label></div>
   </section>
+  <section id="gap-stats" class="stats" hidden>
+    <div class="stat"><span id="gap-worst">–</span><label>Longest gap</label></div>
+    <div class="stat"><span id="gap-cover">–</span><label id="gap-cover-label">Steadiness</label></div>
+    <div class="stat"><span id="gap-clean">0.00s</span><label>Clean run</label></div>
+    <div class="stat"><span id="gap-best">0.00s</span><label>Best clean run (all time)</label></div>
+  </section>
   <div id="pad" class="pad"><div id="pad-label"></div></div>
-  <section class="drags">
+  <section id="gap-section" class="drags" hidden>
+    <div id="gap-summary" class="summary"></div>
+    <div id="gap-bars" class="gap-bars"><div class="gap-line"><span>50ms</span></div></div>
+  </section>
+  <section id="drag-section" class="drags">
     <div id="drag-summary" class="summary"></div>
     <div id="drag-bars" class="drag-bars"></div>
   </section>
@@ -148,6 +164,8 @@
           clean; a very slightly damp fingertip grips better than a bone-dry one.</p>
       </li>
     </ol>
+    <p id="bridge-note" class="guide-note" hidden>Bridging: use Gap check mode. Minecraft runs 20 ticks a second (one every 50ms), and a block
+      can only place on a tick that got a click, so a steady stream with no gap over 50ms beats a fast but uneven one.</p>
     <p class="guide-note">Some game servers limit or flag very high CPS, so check the rules where you play.</p>
   </section>
   </aside>

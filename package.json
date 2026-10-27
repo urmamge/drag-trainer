@@ -1,6 +1,6 @@
 {
   "name": "drag-trainer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Learn to drag click: per-drag stats, a coach, practice reminders and a how-to guide",
   "main": "dist/main.js",
   "author": "urmamge",

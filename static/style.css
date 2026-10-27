@@ -1,4 +1,4 @@
-:root { --bg:#14161b; --panel:#1d2027; --line:#2c313b; --text:#e7e9ee; --muted:#8a91a0; --accent:#5b8cff; --good:#3ecf8e; --warn:#f0a544; }
+:root { --bg:#14161b; --panel:#1d2027; --line:#2c313b; --text:#e7e9ee; --muted:#8a91a0; --accent:#5b8cff; --good:#3ecf8e; --warn:#f0a544; --bad:#ef5a5a; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { height: 100%; margin: 0; }
@@ -60,7 +60,7 @@ h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .history-list .h-meta, .history-list .h-when { color: var(--muted); font-size: 12px; }
 .history-list .h-when { text-align: right; }
 .history-list .empty { display: block; color: var(--muted); border: none; }
-header { display: flex; justify-content: space-between; align-items: center; }
+header { display: flex; justify-content: space-between; align-items: center; position: relative; }
 h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: .3px; }
 button { font: inherit; color: var(--text); cursor: pointer; }
 .ghost { background: none; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; }
@@ -98,3 +98,17 @@ button { font: inherit; color: var(--text); cursor: pointer; }
 .drag-bar span { position: absolute; top: -15px; left: 0; right: 0; text-align: center;
   font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
 @keyframes pulse { from { background: #252a35; } to { background: var(--panel); } }
+.gap-bars { position: relative; display: flex; align-items: flex-end; gap: 1px; height: 74px; padding-top: 14px;
+  border-bottom: 1px solid var(--line); }
+.gap-bar { flex: 1; max-width: 10px; min-height: 2px; background: var(--good); border-radius: 2px 2px 0 0; }
+.gap-bar.warn { background: var(--warn); }
+.gap-bar.bad { background: var(--bad); }
+.gap-line { position: absolute; left: 0; right: 0; bottom: 20px; border-top: 1px dashed var(--muted);
+  pointer-events: none; }
+.gap-line span { position: absolute; right: 0; top: -15px; font-size: 10px; color: var(--muted); }
+#settings-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.settings { position: absolute; top: calc(100% + 6px); right: 0; z-index: 10; width: 300px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4); }
+.toggle { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.toggle b { color: var(--text); font-weight: 600; font-size: 13px; }
+.toggle input { accent-color: var(--accent); margin: 3px 0 0; cursor: pointer; }
