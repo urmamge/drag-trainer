@@ -48,9 +48,10 @@ const gapCleanEl = $<HTMLSpanElement>('gap-clean');
 const gapBestEl = $<HTMLSpanElement>('gap-best');
 const gapSummary = $<HTMLDivElement>('gap-summary');
 const gapBars = $<HTMLDivElement>('gap-bars');
-const gapCoverLabel = $<HTMLLabelElement>('gap-cover-label');
 const bridgeToggle = $<HTMLInputElement>('bridge-coach');
 const bridgeNote = $<HTMLElement>('bridge-note');
+const maxGapChips = $<HTMLDivElement>('max-gap');
+const gapLine = $<HTMLDivElement>('gap-line');
 const settingsBtn = $<HTMLButtonElement>('settings-btn');
 const settingsMenu = $<HTMLDivElement>('settings');
 
@@ -258,14 +259,19 @@ function analyse(ds: number[][], seconds?: number): Tip[] {
 
 // --- Gap check -----------------------------------------------------------------
 // Steady drag clicking means no long pauses, so this mode looks at every gap
-// between clicks, not clicks per drag. 50ms is the target because it's one
-// Minecraft tick, which the optional bridge coach (Settings) talks about.
+// between clicks, not clicks per drag. The longest gap that still counts as
+// steady is a setting: 50ms (one Minecraft tick) is the strictest, and 100ms
+// lets a quick reset between drags through.
 
-const TICK_MS = 50;
+const MAX_GAP_KEY = 'maxGap';
+const MAX_GAPS = [50, 75, 100, 150];
+let maxGap = (() => {
+  try { const v = Number(localStorage.getItem(MAX_GAP_KEY)); return MAX_GAPS.includes(v) ? v : 100; } catch { return 100; }
+})();
 // A pause this long means you stopped, so the next click starts a new run.
 const STREAM_GAP_MS = 300;
 const GAP_BARS = 160;
-const GAP_SCALE_MS = 150;
+const GAP_SCALE_MS = 200;
 const GAP_CHART_PX = 60;
 
 let streams: number[][] = [];
@@ -274,9 +280,9 @@ let streamEndTimer = 0;
 
 const BRIDGE_KEY = 'bridgeCoach';
 let bridgeCoach = (() => { try { return localStorage.getItem(BRIDGE_KEY) === '1'; } catch { return false; } })();
-const steadyWord = () => (bridgeCoach ? 'of ticks covered' : 'steady');
 
-const bestCleanKey = () => `bestClean:${btn}`;
+// Bests from before the setting existed were all at 50ms, so that keeps the old key.
+const bestCleanKey = () => `bestClean:${btn}${maxGap === 50 ? '' : `:${maxGap}`}`;
 function getBestClean(): number {
   try { return Number(localStorage.getItem(bestCleanKey())) || 0; } catch { return 0; }
 }
@@ -285,26 +291,26 @@ function setBestClean(v: number): void {
 }
 
 const gapsOf = (s: number[]) => s.slice(1).map((t, i) => t - s[i]);
-// A gap of g ms spans g/50 tick boundaries on average, and the click that ends it
-// covers one of them, so the rest are ticks that got no click.
+// Split the run into max-gap-sized windows: a gap of g ms spans g/maxGap of them,
+// and the click that ends it fills one, so the rest are windows with no click.
 function coverage(s: number[]): number {
   const gaps = gapsOf(s);
   const span = gaps.reduce((a, g) => a + g, 0);
   if (span <= 0) return 1;
-  const missed = gaps.reduce((m, g) => m + Math.max(0, g / TICK_MS - 1), 0);
-  return Math.max(0, 1 - missed / (span / TICK_MS));
+  const missed = gaps.reduce((m, g) => m + Math.max(0, g / maxGap - 1), 0);
+  return Math.max(0, 1 - missed / (span / maxGap));
 }
 // A drag that dies out spaces its clicks out first, so a long gap right after an
 // already slow one is the buzz thinning; after fast clicks it's a reset.
 function thinned(gaps: number[], i: number): boolean {
   return i > 0 && gaps[i - 1] > Math.max(1.5 * median(gaps), 25);
 }
-// Longest stretch, in seconds, with no gap over one tick.
+// Longest stretch, in seconds, with no gap over the max gap.
 function cleanSecs(s: number[]): number {
   let best = 0;
   let from = s[0];
   for (let i = 1; i < s.length; i++) {
-    if (s[i] - s[i - 1] > TICK_MS) from = s[i];
+    if (s[i] - s[i - 1] > maxGap) from = s[i];
     best = Math.max(best, s[i] - from);
   }
   return best / 1000;
@@ -333,21 +339,21 @@ function coachStream(): void {
   if (s.length < 2) return setLive('fix', 'Only one click. Keep clicking for the whole bridge.');
   const gaps = gapsOf(s);
   const worst = Math.max(...gaps);
-  const over = gaps.filter((g) => g > TICK_MS).length;
+  const over = gaps.filter((g) => g > maxGap).length;
   const secs = (s[s.length - 1] - s[0]) / 1000;
   const clean = cleanSecs(s);
   const where = thinned(gaps, gaps.indexOf(worst)) ? 'the drag thinned out before it' : 'a reset between drags';
   const bridge = !bridgeCoach ? ''
-    : over === 0 ? ' Steady enough to god bridge: every tick got a click.'
-    : ` Too slow to god bridge: a ${Math.round(worst)}ms gap can leave a tick with no click, so a block wouldn't place.`;
+    : over === 0 ? ` Steady enough to god bridge: no gap over ${maxGap}ms.`
+    : ` Risky for god bridging: a ${Math.round(worst)}ms gap is a long time with no block going down.`;
   if (bestCleanBefore > 0 && clean > bestCleanBefore) {
-    setLive('good', `New best clean run: ${clean.toFixed(2)}s with no gap over ${TICK_MS}ms.${bridge}`);
+    setLive('good', `New best clean run: ${clean.toFixed(2)}s with no gap over ${maxGap}ms.${bridge}`);
   } else if (over === 0) {
     setLive('good', `${secs.toFixed(2)}s, longest gap ${Math.round(worst)}ms. No pauses at all.${bridge}`);
   } else {
-    setLive(worst > 2 * TICK_MS ? 'fix' : 'info',
+    setLive(worst > 1.5 * maxGap ? 'fix' : 'info',
       `Longest gap ${Math.round(worst)}ms, at click ${gaps.indexOf(worst) + 2} (${where}). ` +
-      `${over} gap${over > 1 ? 's' : ''} over ${TICK_MS}ms, ${Math.round(coverage(s) * 100)}% ${steadyWord()}.${bridge}`);
+      `${over} gap${over > 1 ? 's' : ''} over ${maxGap}ms, ${Math.round(coverage(s) * 100)}% steady.${bridge}`);
   }
 }
 
@@ -361,19 +367,19 @@ function analyseGaps(ss: number[][]): Tip[] {
   const avgCov = mean(covs);
   const tips: Tip[] = [{
     kind: 'info',
-    title: `${runs.length} runs · ${Math.round(avgCov * 100)}% ${steadyWord()} · longest gap ~${Math.round(median(worsts))}ms`,
+    title: `${runs.length} runs · ${Math.round(avgCov * 100)}% steady · longest gap ~${Math.round(median(worsts))}ms`,
     body: `Best clean run this session: ${Math.max(...runs.map(cleanSecs)).toFixed(2)}s.`,
   }];
 
   const over = runs.flatMap((s) => {
     const gaps = gapsOf(s);
-    return gaps.map((g, i) => ({ g, thin: thinned(gaps, i) })).filter((x) => x.g > TICK_MS);
+    return gaps.map((g, i) => ({ g, thin: thinned(gaps, i) })).filter((x) => x.g > maxGap);
   });
   const resets = over.filter((x) => !x.thin).length;
   if (over.length >= 3 && resets >= over.length * 0.6) tips.push({
     kind: 'fix', title: 'Your gaps are the resets between drags',
-    body: `${resets} of ${over.length} long gaps came between drags. Start the next drag before the last one dies out, ` +
-      'or use shorter drags so you get back to the top of the button sooner.',
+    body: `${resets} of ${over.length} long gaps came between drags. Keep your drags long, but start the next one ` +
+      'while the last is still buzzing, so your finger is already back at the top of the button when it ends.',
   });
   else if (over.length >= 3 && resets <= over.length * 0.4) tips.push({
     kind: 'fix', title: 'Your drags thin out before they end',
@@ -383,22 +389,19 @@ function analyseGaps(ss: number[][]): Tip[] {
 
   if (avgCov >= 0.95) tips.push(bridgeCoach ? {
     kind: 'good', title: 'Steady enough for god bridging',
-    body: 'Almost every tick gets a click. Now keep it that steady for longer runs.',
+    body: `Almost no gaps over ${maxGap}ms. Now keep it that steady for longer runs.`,
   } : {
     kind: 'good', title: 'Very steady clicking',
     body: 'Almost no pauses between clicks. Now keep it that steady for longer runs.',
   });
   else if (avgCov < 0.8) tips.push({
-    kind: 'fix', title: `Only ${Math.round(avgCov * 100)}% ${steadyWord()}`,
-    body: (bridgeCoach
-      ? 'More than one tick in five gets no click, and a block can only place on a tick with one, so that bridge would fail. '
-      : 'More than one 50ms stretch in five has no click in it. ') +
-      'Even, steady clicks matter more here than fast ones.',
+    kind: 'fix', title: `Only ${Math.round(avgCov * 100)}% steady`,
+    body: `More than one ${maxGap}ms stretch in five has no click in it. Even, steady clicks matter more here than fast ones.`,
   });
 
   if (runs.length >= 6 && Math.max(...covs) - Math.min(...covs) > 0.3) tips.push({
     kind: 'info', title: 'Some runs are much steadier than others',
-    body: `Runs ranged from ${Math.round(Math.min(...covs) * 100)}% to ${Math.round(Math.max(...covs) * 100)}% ${steadyWord()}. ` +
+    body: `Runs ranged from ${Math.round(Math.min(...covs) * 100)}% to ${Math.round(Math.max(...covs) * 100)}% steady. ` +
       'Your technique is there sometimes, so repeat what the good runs did.',
   });
   return tips;
@@ -411,28 +414,41 @@ function renderGaps(): void {
   gapCoverEl.textContent = gaps.length ? `${Math.round(coverage(s) * 100)}%` : '–';
   gapCleanEl.textContent = s.length ? `${cleanSecs(s).toFixed(2)}s` : '0.00s';
   gapBestEl.textContent = `${getBestClean().toFixed(2)}s`;
-  gapCoverLabel.textContent = bridgeCoach ? 'Ticks covered' : 'Steadiness';
 
   if (!gaps.length) {
-    gapSummary.textContent = bridgeCoach
-      ? `Each bar is the gap before one click. Bars above the line (${TICK_MS}ms, one game tick) ` +
-        'mean a tick with no click, where a block would not place.'
-      : `Each bar is the gap before one click. Bars above the ${TICK_MS}ms line are pauses in your clicking.`;
+    gapSummary.textContent = `Each bar is the gap before one click. Bars above the ${maxGap}ms line are pauses ` +
+      'in your clicking (change the line in Settings).';
   } else {
     const secs = (s[s.length - 1] - s[0]) / 1000;
-    const over = gaps.filter((g) => g > TICK_MS).length;
+    const over = gaps.filter((g) => g > maxGap).length;
     gapSummary.innerHTML = `<b>${s.length}</b> clicks over <b>${secs.toFixed(2)}s</b> · ` +
-      `<b>${secs > 0 ? ((s.length - 1) / secs).toFixed(1) : '0'}</b> CPS · <b>${over}</b> gaps over ${TICK_MS}ms`;
+      `<b>${secs > 0 ? ((s.length - 1) / secs).toFixed(1) : '0'}</b> CPS · <b>${over}</b> gaps over ${maxGap}ms`;
   }
 
   gapBars.querySelectorAll('.gap-bar').forEach((b) => b.remove());
   for (const g of gaps.slice(-GAP_BARS)) {
-    const bar = el('div', 'gap-bar' + (g > 2 * TICK_MS ? ' bad' : g > TICK_MS ? ' warn' : ''), '');
+    const bar = el('div', 'gap-bar' + (g > 1.5 * maxGap ? ' bad' : g > maxGap ? ' warn' : ''), '');
     bar.style.height = `${(Math.min(g, GAP_SCALE_MS) / GAP_SCALE_MS) * GAP_CHART_PX}px`;
     bar.title = `${Math.round(g)}ms`;
     gapBars.appendChild(bar);
   }
 }
+
+function applyMaxGap(): void {
+  maxGapChips.querySelectorAll<HTMLButtonElement>('.chip').forEach((c) => c.classList.toggle('active', Number(c.dataset.gap) === maxGap));
+  gapLine.style.bottom = `${(maxGap / GAP_SCALE_MS) * GAP_CHART_PX}px`;
+  gapLine.querySelector('span')!.textContent = `${maxGap}ms`;
+  renderGaps();
+}
+
+maxGapChips.onclick = (e) => {
+  const v = Number((e.target as HTMLElement).closest<HTMLButtonElement>('.chip')?.dataset.gap);
+  if (!MAX_GAPS.includes(v) || v === maxGap) return;
+  maxGap = v;
+  try { localStorage.setItem(MAX_GAP_KEY, String(v)); } catch { /* ignore */ }
+  applyMaxGap();
+  if (mode === 'gaps' && !session) reset();
+};
 
 function applyBridge(): void {
   bridgeToggle.checked = bridgeCoach;
@@ -1770,6 +1786,7 @@ markFrontBtn.onclick = () => markPoint('front');
 renderReplayCount();
 
 applyBridge();
+applyMaxGap();
 renderChips();
 reset();
 checkSchedule();
